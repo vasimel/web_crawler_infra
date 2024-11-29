@@ -28,6 +28,13 @@ resource "yandex_vpc_subnet" "web_crawler_subnet" {
   v4_cidr_blocks = ["10.0.0.0/24"]
 }
 
+resource "yandex_vpc_subnet" "web_crawler_subnet_2" {
+  name           = "web-crawler-subnet-2"
+  network_id     = yandex_vpc_network.web_crawler_network.id
+  zone           = "ru-central1-b"
+  v4_cidr_blocks = ["10.1.0.0/24"]
+}
+
 
 resource "yandex_compute_instance" "web_crawler_vm" {
   name        = "web-crawler-vm"
@@ -79,7 +86,7 @@ resource "yandex_compute_instance" "web_crawler_vm" {
 }
 
 
-# Создание кластера PostgreSQL
+# Создание кластера PostgreSQL с репликацией и автоматическим переключением
 resource "yandex_mdb_postgresql_cluster" "web_crawler_db" {
   name        = "web-crawler-db"
   environment = "PRODUCTION"
@@ -95,9 +102,15 @@ resource "yandex_mdb_postgresql_cluster" "web_crawler_db" {
     }
   }
 
+  # Конфигурация узлов кластера
   host {
     zone      = "ru-central1-a"
     subnet_id = yandex_vpc_subnet.web_crawler_subnet.id
+  }
+
+  host {
+    zone      = "ru-central1-b"
+    subnet_id = yandex_vpc_subnet.web_crawler_subnet_2.id
   }
 }
 
@@ -114,6 +127,7 @@ resource "yandex_mdb_postgresql_user" "crawler_user" {
   name       = "crawler_user"
   password   = var.db_password
 }
+
 
 output "db_host_ip" {
   value = yandex_mdb_postgresql_cluster.web_crawler_db.host[0]
