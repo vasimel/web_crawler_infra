@@ -52,20 +52,24 @@ resource "yandex_compute_instance" "web_crawler_vm" {
 
   metadata = {
     ssh-keys  = "ubuntu:${file(var.ssh_public_key_path)}"
+
     user-data = <<-EOT
       #!/bin/bash
-      # Обновляем систему
+      mkdir -p ~/.postgresql
+      wget "https://storage.yandexcloud.net/cloud-certs/CA.pem" --output-document ~/.postgresql/root.crt
+      chmod 0600 ~/.postgresql/root.crt
       sudo apt-get update -y
       sudo apt-get upgrade -y
 
       # Устанавливаем необходимые зависимости
       sudo apt-get install -y git python3 python3-pip
+      pip3 install scrapy psycopg2-binary
+      export DB_PASSWORD=${var.db_password}
+      export DB_HOST=${yandex_mdb_postgresql_cluster.web_crawler_db.host[0].fqdn}
 
-      git clone https://github.com/leapsky/bookspider.git /home/ubuntu/bookspider
-
+      git clone https://github.com/vasimel/bookspider.git /home/ubuntu/bookspider
       cd /home/ubuntu/bookspider
 
-      pip3 install scrapy
       scrapy startproject bookvoed
       cd bookvoed
       scrapy genspider bookspider
@@ -110,6 +114,11 @@ resource "yandex_mdb_postgresql_user" "crawler_user" {
   name       = "crawler_user"
   password   = var.db_password
 }
+
+output "db_host_ip" {
+  value = yandex_mdb_postgresql_cluster.web_crawler_db.host[0]
+}
+
 
 resource "yandex_iam_service_account" "web_crawler_sa" {
   name = "web-crawler-sa"
