@@ -20,3 +20,8 @@ variable "db_password" {
   description = "Password for PostgreSQL database"
   sensitive   = true
 }
+
+variable "redis_password" {
+  description = "Password for Redis database"
+  sensitive   = true
+}

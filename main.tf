@@ -35,9 +35,31 @@ resource "yandex_vpc_subnet" "web_crawler_subnet_2" {
   v4_cidr_blocks = ["10.1.0.0/24"]
 }
 
+# Создание Redis-кластера (для простоты используем 1 экземпляр)
+resource "yandex_mdb_redis_cluster" "web_crawler_redis" {
+  name       = "web-crawler-redis"
+  network_id = yandex_vpc_network.web_crawler_network.id
+  environment = "PRODUCTION"
 
-resource "yandex_compute_instance" "web_crawler_vm" {
-  name        = "web-crawler-vm"
+  config {
+    maxmemory_policy = "ALLKEYS_LRU"
+    version = "7.2"
+    password = var.redis_password
+  }
+  resources {
+    resource_preset_id = "hm2.nano"
+    disk_type_id       = "network-ssd"
+    disk_size          = 16
+  }
+
+  host {
+  zone      = "ru-central1-a"
+  subnet_id = yandex_vpc_subnet.web_crawler_subnet.id
+  }
+}
+
+resource "yandex_compute_instance" "web_crawler_vm_to_queue" {
+  name        = "web-crawler-vm-to-queue"
   platform_id = "standard-v1"
   zone        = "ru-central1-a"
 
@@ -54,8 +76,61 @@ resource "yandex_compute_instance" "web_crawler_vm" {
 
   network_interface {
     subnet_id = yandex_vpc_subnet.web_crawler_subnet.id
-    nat       = true # Включите NAT, чтобы автоматически назначить публичный IP
+    nat       = true
   }
+
+  depends_on = [
+    yandex_mdb_redis_cluster.web_crawler_redis
+  ]
+
+  metadata = {
+    ssh-keys  = "ubuntu:${file(var.ssh_public_key_path)}"
+
+    user-data = <<-EOT
+      #!/bin/bash
+      sudo apt-get update -y
+      sudo apt-get upgrade -y
+
+      sudo apt-get install -y git python3 python3-pip
+      pip3 install scrapy redis
+
+      git clone https://github.com/vasimel/bookspider.git /home/ubuntu/bookspider
+      cd /home/ubuntu/bookspider
+      export REDIS_HOST=${yandex_mdb_redis_cluster.web_crawler_redis.host[0].fqdn}
+      export REDIS_PASSWORD=${var.redis_password}
+      scrapy startproject bookvoed
+      cd bookvoed
+      scrapy crawl urls2queue
+    EOT
+  }
+}
+
+# Создание серверов обработчиков
+resource "yandex_compute_instance" "web_crawler_vm" {
+  count       = 2
+  name        = "web-crawler-vm-${count.index + 1}"
+  platform_id = "standard-v1"
+  zone        = "ru-central1-a"
+
+  resources {
+    cores  = 2
+    memory = 4
+  }
+
+  boot_disk {
+    initialize_params {
+      image_id = "fd8d16o0fku50qt0g8hl" # Ubuntu 20.04
+    }
+  }
+
+  network_interface {
+    subnet_id = yandex_vpc_subnet.web_crawler_subnet.id
+    nat       = true 
+  }
+
+  depends_on = [
+    yandex_mdb_postgresql_cluster.web_crawler_db
+  ]
 
   metadata = {
     ssh-keys  = "ubuntu:${file(var.ssh_public_key_path)}"
@@ -66,20 +141,16 @@ resource "yandex_compute_instance" "web_crawler_vm" {
       wget "https://storage.yandexcloud.net/cloud-certs/CA.pem" --output-document ~/.postgresql/root.crt
       chmod 0600 ~/.postgresql/root.crt
       sudo apt-get update -y
-      sudo apt-get upgrade -y
+      sudo apt-get install -y git python3 python3-pip redis-server
+      pip3 install scrapy scrapy-redis psycopg2-binary
 
-      # Устанавливаем необходимые зависимости
-      sudo apt-get install -y git python3 python3-pip
-      pip3 install scrapy psycopg2-binary
       export DB_PASSWORD=${var.db_password}
       export DB_HOST=${yandex_mdb_postgresql_cluster.web_crawler_db.host[0].fqdn}
 
+      export REDIS_HOST=${yandex_mdb_redis_cluster.web_crawler_redis.host[0].fqdn}
+      export REDIS_PASSWORD=${var.redis_password}
       git clone https://github.com/vasimel/bookspider.git /home/ubuntu/bookspider
       cd /home/ubuntu/bookspider
-
-      scrapy startproject bookvoed
-      cd bookvoed
-      scrapy genspider bookspider
       scrapy crawl bookspider
     EOT
   }
@@ -112,6 +183,9 @@ resource "yandex_mdb_postgresql_cluster" "web_crawler_db" {
     zone      = "ru-central1-b"
     subnet_id = yandex_vpc_subnet.web_crawler_subnet_2.id
   }
+  depends_on = [
+    yandex_mdb_redis_cluster.web_crawler_redis
+  ]
 }
 
 # Создание базы данных
